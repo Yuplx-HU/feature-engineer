@@ -121,7 +121,7 @@ The `config` dictionary for `feature_engineer` supports the following keys:
 ## Example Usage
 ```python
 import pandas as pd
-from utils.feature_engineer import feature_engineer
+from feature_engineer import feature_engineer
 
 # Load raw data (Excel file)
 raw_data = pd.read_excel("data/raw_data.xlsx")
