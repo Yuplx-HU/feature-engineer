@@ -1,228 +1,188 @@
-import os
-from tqdm import tqdm
-
+import random
+import numpy as np
 import pandas as pd
-from sklearn.impute import KNNImputer
-from sklearn.preprocessing import MinMaxScaler, StandardScaler, MaxAbsScaler, RobustScaler, LabelEncoder, OrdinalEncoder
-from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.feature_selection import (
+    VarianceThreshold,
+    SelectKBest, mutual_info_classif, mutual_info_regression,
+    RFECV,
+)
+
+from npt.utils.model_trainer import create_estimator, create_cv, create_scorer
 
 
-def convert_to_number_columns(columns) -> list[int]:
-    if all(isinstance(col, int) for col in columns):
-        return columns
-    elif all(isinstance(col, str) for col in columns):
-        number_columns = []
-        for column in columns:
-            column = column.upper()
-        
-            if not column.isalpha():
-                raise ValueError("Column letter must contain only alphabetic characters.")
-            
-            result = 0
-            
-            for i, char in enumerate(reversed(column)):
-                char_value = ord(char) - ord('A') + 1
-                result += char_value * (26 ** i)
-            
-            number_columns.append(result - 1)
-
-        return number_columns
-    else:
-        raise ValueError("Columns must be all integers or all strings.")
-
-
-def fill_missing_data(df: pd.DataFrame, strategy: str, col_names: list[str], **kwargs) -> pd.DataFrame:
-    df = df.copy()
+class OptimalRFE(BaseEstimator, TransformerMixin):
+    def __init__(self, task_type: str, estimator: BaseEstimator, random_state: int = random.randint(0, 2**32-1)):
+        self.task_type = task_type
+        self.estimator = estimator
+        self.random_state = random_state
     
-    if not col_names:
-        return df
-    
-    if strategy == "mean":
-        fill_values = df[col_names].mean()
-        df[col_names] = df[col_names].fillna(fill_values)
-            
-    elif strategy == "median":
-        fill_values = df[col_names].median()
-        df[col_names] = df[col_names].fillna(fill_values)
-            
-    elif strategy == "mode":
-        for col in col_names:
-            mode_val = df[col].mode()[0] if not df[col].mode().empty else None
-            if mode_val is not None:
-                df[col] = df[col].fillna(mode_val)
-                
-    elif strategy == "constant":
-        value = kwargs.get('value', 0)
-        df[col_names] = df[col_names].fillna(value)
-            
-    elif strategy == "forward":
-        limit = kwargs.get('limit')
-        df[col_names] = df[col_names].fillna(method='ffill', limit=limit)
-            
-    elif strategy == "backward":
-        limit = kwargs.get('limit')
-        df[col_names] = df[col_names].fillna(method='bfill', limit=limit)
-            
-    elif strategy == "interpolate":
-        method = kwargs.get('method', 'linear')
-        limit = kwargs.get('limit')
-        df[col_names] = df[col_names].interpolate(method=method, limit=limit, limit_direction='both')
-            
-    elif strategy == "knn":
-        n_neighbors = kwargs.get('n_neighbors', 5)
-        imputer = KNNImputer(n_neighbors=n_neighbors)
-        imputed_data = imputer.fit_transform(df[col_names])
-        df[col_names] = pd.DataFrame(imputed_data, columns=col_names, index=df.index)
-        
-    elif strategy == "drop":
-        how = kwargs.get('how', 'any')
-        df = df.dropna(subset=col_names, how=how)
-        
-    else:
-        raise ValueError(f"Unknown fill strategy: {strategy}")
-    
-    return df
-
-
-def standardize_data_format(df: pd.DataFrame, strategy: str, col_names: list[str], **kwargs) -> pd.DataFrame:
-    df = df.copy()
-    
-    if not col_names:
-        return df
-    
-    to_scale_cols = col_names
-    
-    if strategy == "minmax":
-        scaler = MinMaxScaler(**kwargs)
-    elif strategy == "standard":
-        scaler = StandardScaler(**kwargs)
-    elif strategy == "maxabs":
-        scaler = MaxAbsScaler(**kwargs)
-    elif strategy == "robust":
-        scaler = RobustScaler(**kwargs)
-    else:
-        raise ValueError(f"Unknown standardizing strategy: {strategy}")
-    
-    scaled_data = scaler.fit_transform(df[to_scale_cols])
-    df[to_scale_cols] = pd.DataFrame(scaled_data, columns=to_scale_cols, index=df.index)
-    
-    return df
-
-
-def encode_features(df: pd.DataFrame, strategy: str, col_names: list[str], **kwargs) -> pd.DataFrame:
-    df = df.copy()
-    
-    if not col_names:
-        return df
-    
-    to_encode_cols = col_names
-    
-    if strategy == "onehot":
-        prefix = kwargs.get('prefix', to_encode_cols)
-        prefix_sep = kwargs.get('prefix_sep', '_')
-        dtype = kwargs.get('dtype', int)
-        
-        encoded_df = pd.get_dummies(
-            df[to_encode_cols],
-            prefix=prefix,
-            prefix_sep=prefix_sep,
-            columns=to_encode_cols,
-            dtype=dtype
+    def fit(self, X, y):
+        self.rfecv_ = RFECV(
+            estimator=self.estimator,
+            cv=create_cv(self.task_type, 5, self.random_state),
+            scoring=create_scorer(self.task_type),
+            min_features_to_select=8,
+            n_jobs=-1,
+            step=1,
         )
         
-        df = df.drop(to_encode_cols, axis=1)
-        df = pd.concat([df, encoded_df], axis=1)
+        self.rfecv_.fit(X, y)
         
-    elif strategy == "labelencode":
-        le = LabelEncoder()
-        for col in to_encode_cols:
-            df[col] = le.fit_transform(df[col].astype(str))
+        self.support_ = self.rfecv_.support_
+        self.ranking_ = self.rfecv_.ranking_
+        self.n_features_ = self.rfecv_.n_features_
+        
+        if hasattr(X, 'columns'):
+            self.feature_names_in_ = np.array(X.columns)
+        else:
+            self.feature_names_in_ = np.array([f'feature_{i}' for i in range(X.shape[1])])
+        
+        self.feature_names_out_ = self.feature_names_in_[self.support_]
+        self._build_performance_history()
+        
+        return self
+    
+    def _build_performance_history(self):
+        if hasattr(self.rfecv_, 'cv_results_') and 'mean_test_score' in self.rfecv_.cv_results_:
+            scores = self.rfecv_.cv_results_['mean_test_score']
+            n_features = self.rfecv_.cv_results_['n_features']
             
-    elif strategy == "ordinal":
-        ordinal_encoder = OrdinalEncoder(**kwargs)
-        encoded_data = ordinal_encoder.fit_transform(df[to_encode_cols])
-        df[to_encode_cols] = pd.DataFrame(encoded_data, columns=to_encode_cols, index=df.index)
-            
-    else:
-        raise ValueError(f"Unknown feature strategy: {strategy}")
+            self.performance_df = pd.DataFrame({
+                'n_features': n_features,
+                'mean_score': scores
+            })
+        else:
+            self.performance_df = None
     
-    return df
-
-
-def generate_tasks(
-    features_df: pd.DataFrame,
-    targets_df: pd.DataFrame,
-    shuffle: bool,
-    test_size: float,
-    random_state: int,
-    save_tasks_path: str = None,
-    verbose: bool = True
-) -> list:
-    if save_tasks_path:
-        os.makedirs(save_tasks_path, exist_ok=True)
-
-    feature_columns = features_df.columns.tolist()
-    target_columns = targets_df.columns.tolist()
+    def transform(self, X):
+        if not hasattr(self, 'rfecv_'):
+            raise ValueError("OptimalRFE must be fitted before transform")
+        return self.rfecv_.transform(X)
     
-    tasks = []
-    for target_col in tqdm(target_columns, desc="Generate tasks", disable=not verbose, unit="task"):
-        task_df = pd.concat([features_df, targets_df[[target_col]]], axis=1)
+    def get_support(self):
+        return self.support_
+    
+    def get_feature_names_out(self, input_features=None):
+        if input_features is None:
+            return self.feature_names_out_
+        return np.asarray(input_features)[self.support_]
+    
+    def get_performance_df(self):
+        return self.performance_df.copy() if self.performance_df is not None else None
+    
+    def plot_performance(self, figsize=(10, 6), title="RFE Performance"):
+        if self.performance_df is None or self.performance_df.empty:
+            return None
         
-        train_df, test_df = train_test_split(
-            task_df,
-            test_size=test_size,
-            random_state=random_state,
-            shuffle=shuffle
-        )
+        fig, ax = plt.subplots(figsize=figsize)
         
-        X_train = train_df[feature_columns]
-        X_test = test_df[feature_columns]
-        y_train = train_df[target_col]
-        y_test = test_df[target_col]
+        df = self.performance_df
+        ax.plot(df['n_features'], df['mean_score'], 'b-o', linewidth=2, markersize=6)
+        ax.set_xlabel('Number of Features', fontsize=12)
+        ax.set_ylabel('CV Score', fontsize=12)
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
         
-        tasks.append({
-            "name": target_col,
-            "X_train": X_train,
-            "X_test": X_test,
-            "y_train": y_train,
-            "y_test": y_test
-        })
+        best_idx = df['mean_score'].idxmax()
+        best_features = df.loc[best_idx, 'n_features']
+        best_score = df.loc[best_idx, 'mean_score']
         
-        if save_tasks_path:
-            train_df.to_csv(os.path.join(save_tasks_path, f"{target_col}_train.csv"), index=False)
-            test_df.to_csv(os.path.join(save_tasks_path, f"{target_col}_test.csv"), index=False)
+        ax.scatter(best_features, best_score, color='red', s=80, zorder=5)
+        ax.axvline(x=best_features, color='red', linestyle='--', alpha=0.5)
+        
+        plt.tight_layout()
+        return fig
     
-    return tasks
+    def get_best_info(self):
+        if self.performance_df is None or self.performance_df.empty:
+            return None
+        
+        best_idx = self.performance_df['mean_score'].idxmax()
+        return {
+            'best_n_features': int(self.performance_df.loc[best_idx, 'n_features']),
+            'best_score': float(self.performance_df.loc[best_idx, 'mean_score']),
+            'selected_features': self.feature_names_out_.tolist()
+        }
 
 
-def feature_engineer(df: pd.DataFrame, config: dict) -> list:
-    features_df = df.iloc[:, convert_to_number_columns(config.get("feature_columns", []))].copy()
-    targets_df = df.iloc[:, convert_to_number_columns(config.get("target_columns", []))].copy()
+class SelectKWorst(BaseEstimator, TransformerMixin):
+    def __init__(self, score_func, k: int):
+        self.score_func = score_func
+        self.k = k
+        
+    def fit(self, X, y):
+        scores = self.score_func(X, y)
+        
+        if hasattr(X, 'columns'):
+            self.feature_names_in_ = np.array(X.columns)
+        else:
+            self.feature_names_in_ = np.array([f'feature_{i}' for i in range(X.shape[1])])
+        
+        k_abs = min(abs(self.k), len(self.feature_names_in_))
+        sorted_indices = np.argsort(scores)
+        self.selected_indices_ = sorted_indices[:k_abs]
+        
+        self.support_ = np.zeros(len(self.feature_names_in_), dtype=bool)
+        self.support_[self.selected_indices_] = True
+        self.feature_names_out_ = self.feature_names_in_[self.support_]
+        
+        return self
     
-    if "fill_missing_data" in config:
-        fill_config = config["fill_missing_data"]
-        for strategy, columns in fill_config.items():
-            features_df = fill_missing_data(features_df, strategy, df.iloc[:, convert_to_number_columns(columns)].columns.tolist())
+    def transform(self, X):
+        if not hasattr(self, 'support_'):
+            raise ValueError("SelectKWorst must be fitted before transform")
+        return X[:, self.support_] if not hasattr(X, 'iloc') else X.iloc[:, self.support_]
     
-    if "standardize_data_format" in config:
-        standardize_config = config["standardize_data_format"]
-        for strategy, columns in standardize_config.items():
-            features_df = standardize_data_format(features_df, strategy, df.iloc[:, convert_to_number_columns(columns)].columns.tolist())
+    def get_support(self):
+        return self.support_
     
-    if "encode_features" in config:
-        encode_config = config["encode_features"]
-        for strategy, columns in encode_config.items():
-            features_df = encode_features(features_df, strategy, df.iloc[:, convert_to_number_columns(columns)].columns.tolist())
+    def get_feature_names_out(self, input_features=None):
+        if input_features is None:
+            return self.feature_names_out_
+        return np.asarray(input_features)[self.support_]
+
+
+def create_preprocessor(numeric_features, categorical_features, 
+                        k_features: int | str = 0, task_type: str = "classification", random_state: int = random.randint(0, 2**32-1)):
+    numeric_pipeline = Pipeline([
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', StandardScaler()),
+    ])
     
-    tasks_config = config.get("generate_tasks", {})
-    tasks = generate_tasks(
-        features_df=features_df,
-        targets_df=targets_df,
-        shuffle=tasks_config.get("shuffle", True),
-        test_size=tasks_config.get("test_size", 0.2),
-        random_state=tasks_config.get("random_state", 42),
-        save_tasks_path=tasks_config.get("save_tasks_path"),
-        verbose=config.get("verbose", True)
+    categorical_pipeline = Pipeline([
+        ('imputer', SimpleImputer(strategy='most_frequent')),
+        ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False)),
+    ])
+    
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('numeric', numeric_pipeline, numeric_features),
+            ('categorical', categorical_pipeline, categorical_features),
+        ],
+        remainder='drop'
     )
     
-    return tasks
+    steps = [
+        ("preprocessor", preprocessor),
+        ("variance_threshold", VarianceThreshold(threshold=0.0)),
+    ]
+    
+    if k_features == "auto":
+        steps.append(("feature_selection", OptimalRFE(task_type, create_estimator(task_type, "rf"), random_state)))
+    elif isinstance(k_features, int) and k_features != 0:
+        score_func = mutual_info_classif if task_type == "classification" else mutual_info_regression
+        if k_features > 0:
+            selector = SelectKBest(score_func=score_func, k=k_features)
+        elif k_features < 0:
+            selector = SelectKWorst(score_func=score_func, k=-k_features)
+        steps.append(("feature_selection", selector))
+    else:
+        raise ValueError("`k_features` must be 'auto' or a non-zero integer")
+    
+    return Pipeline(steps)
