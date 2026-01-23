@@ -1,7 +1,7 @@
 Simple usage:
 ```Python
 preprocessor = create_preprocessor(numeric_feature_names, categorical_feature_names,
-                                   k_features=k_features, task_type=task_type, random_state=random_state)
+                                   task_type=task_type, k_features=k_features, random_state=random_state)
 X = preprocessor.transform(X)
 # OR
 X = preprocessor.fit_transform(X, y)
