@@ -1,7 +1,7 @@
-import random
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -13,11 +13,11 @@ from sklearn.feature_selection import (
     RFECV,
 )
 
-from npt.utils.model_trainer import create_estimator, create_cv, create_scorer
+from npt.utils.machine_learning import create_estimator, create_cv, create_scorer
 
 
 class OptimalRFE(BaseEstimator, TransformerMixin):
-    def __init__(self, task_type: str, estimator: BaseEstimator, random_state: int = random.randint(0, 2**32-1)):
+    def __init__(self, task_type: str, estimator: BaseEstimator, random_state: int = 1412):
         self.task_type = task_type
         self.estimator = estimator
         self.random_state = random_state
@@ -38,10 +38,10 @@ class OptimalRFE(BaseEstimator, TransformerMixin):
         self.ranking_ = self.rfecv_.ranking_
         self.n_features_ = self.rfecv_.n_features_
         
-        if hasattr(X, 'columns'):
+        if hasattr(X, "columns"):
             self.feature_names_in_ = np.array(X.columns)
         else:
-            self.feature_names_in_ = np.array([f'feature_{i}' for i in range(X.shape[1])])
+            self.feature_names_in_ = np.array([f"feature_{i}" for i in range(X.shape[1])])
         
         self.feature_names_out_ = self.feature_names_in_[self.support_]
         self._build_performance_history()
@@ -49,19 +49,19 @@ class OptimalRFE(BaseEstimator, TransformerMixin):
         return self
     
     def _build_performance_history(self):
-        if hasattr(self.rfecv_, 'cv_results_') and 'mean_test_score' in self.rfecv_.cv_results_:
-            scores = self.rfecv_.cv_results_['mean_test_score']
-            n_features = self.rfecv_.cv_results_['n_features']
+        if hasattr(self.rfecv_, "cv_results_") and "mean_test_score" in self.rfecv_.cv_results_:
+            scores = self.rfecv_.cv_results_["mean_test_score"]
+            n_features = self.rfecv_.cv_results_["n_features"]
             
             self.performance_df = pd.DataFrame({
-                'n_features': n_features,
-                'mean_score': scores
+                "n_features": n_features,
+                "mean_score": scores
             })
         else:
             self.performance_df = None
     
     def transform(self, X):
-        if not hasattr(self, 'rfecv_'):
+        if not hasattr(self, "rfecv_"):
             raise ValueError("OptimalRFE must be fitted before transform")
         return self.rfecv_.transform(X)
     
@@ -76,25 +76,25 @@ class OptimalRFE(BaseEstimator, TransformerMixin):
     def get_performance_df(self):
         return self.performance_df.copy() if self.performance_df is not None else None
     
-    def plot_performance(self, figsize=(10, 6), title="RFE Performance"):
+    def plot_performance(self):
         if self.performance_df is None or self.performance_df.empty:
             return None
         
-        fig, ax = plt.subplots(figsize=figsize)
+        fig, ax = plt.subplots(figsize=(10, 6))
         
         df = self.performance_df
-        ax.plot(df['n_features'], df['mean_score'], 'b-o', linewidth=2, markersize=6)
-        ax.set_xlabel('Number of Features', fontsize=12)
-        ax.set_ylabel('CV Score', fontsize=12)
-        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.plot(df["n_features"], df["mean_score"], "b-o", linewidth=2, markersize=6)
+        ax.set_xlabel("Number of Features", fontsize=12)
+        ax.set_ylabel("CV Score", fontsize=12)
+        ax.set_title("RFE Performance", fontsize=14, fontweight="bold")
         ax.grid(True, alpha=0.3)
         
-        best_idx = df['mean_score'].idxmax()
-        best_features = df.loc[best_idx, 'n_features']
-        best_score = df.loc[best_idx, 'mean_score']
+        best_idx = df["mean_score"].idxmax()
+        best_features = df.loc[best_idx, "n_features"]
+        best_score = df.loc[best_idx, "mean_score"]
         
-        ax.scatter(best_features, best_score, color='red', s=80, zorder=5)
-        ax.axvline(x=best_features, color='red', linestyle='--', alpha=0.5)
+        ax.scatter(best_features, best_score, color="red", s=80, zorder=5)
+        ax.axvline(x=best_features, color="red", linestyle="--", alpha=0.5)
         
         plt.tight_layout()
         return fig
@@ -103,11 +103,11 @@ class OptimalRFE(BaseEstimator, TransformerMixin):
         if self.performance_df is None or self.performance_df.empty:
             return None
         
-        best_idx = self.performance_df['mean_score'].idxmax()
+        best_idx = self.performance_df["mean_score"].idxmax()
         return {
-            'best_n_features': int(self.performance_df.loc[best_idx, 'n_features']),
-            'best_score': float(self.performance_df.loc[best_idx, 'mean_score']),
-            'selected_features': self.feature_names_out_.tolist()
+            "best_n_features": int(self.performance_df.loc[best_idx, "n_features"]),
+            "best_score": float(self.performance_df.loc[best_idx, "mean_score"]),
+            "selected_features": self.feature_names_out_.tolist()
         }
 
 
@@ -119,10 +119,10 @@ class SelectKWorst(BaseEstimator, TransformerMixin):
     def fit(self, X, y):
         scores = self.score_func(X, y)
         
-        if hasattr(X, 'columns'):
+        if hasattr(X, "columns"):
             self.feature_names_in_ = np.array(X.columns)
         else:
-            self.feature_names_in_ = np.array([f'feature_{i}' for i in range(X.shape[1])])
+            self.feature_names_in_ = np.array([f"feature_{i}" for i in range(X.shape[1])])
         
         k_abs = min(abs(self.k), len(self.feature_names_in_))
         sorted_indices = np.argsort(scores)
@@ -135,9 +135,9 @@ class SelectKWorst(BaseEstimator, TransformerMixin):
         return self
     
     def transform(self, X):
-        if not hasattr(self, 'support_'):
+        if not hasattr(self, "support_"):
             raise ValueError("SelectKWorst must be fitted before transform")
-        return X[:, self.support_] if not hasattr(X, 'iloc') else X.iloc[:, self.support_]
+        return X[:, self.support_] if not hasattr(X, "iloc") else X.iloc[:, self.support_]
     
     def get_support(self):
         return self.support_
@@ -149,23 +149,23 @@ class SelectKWorst(BaseEstimator, TransformerMixin):
 
 
 def create_preprocessor(numeric_features, categorical_features, 
-                        k_features: int | str = 0, task_type: str = "classification", random_state: int = random.randint(0, 2**32-1)):
+                        task_type: str = "classification", k_features: int | str = 0, random_state: int = 1412):
     numeric_pipeline = Pipeline([
-        ('imputer', SimpleImputer(strategy='median')),
-        ('scaler', StandardScaler()),
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
     ])
     
     categorical_pipeline = Pipeline([
-        ('imputer', SimpleImputer(strategy='most_frequent')),
-        ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False)),
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
     ])
     
     preprocessor = ColumnTransformer(
         transformers=[
-            ('numeric', numeric_pipeline, numeric_features),
-            ('categorical', categorical_pipeline, categorical_features),
+            ("numeric", numeric_pipeline, numeric_features),
+            ("categorical", categorical_pipeline, categorical_features),
         ],
-        remainder='drop'
+        remainder="drop"
     )
     
     steps = [
@@ -182,7 +182,5 @@ def create_preprocessor(numeric_features, categorical_features,
         elif k_features < 0:
             selector = SelectKWorst(score_func=score_func, k=-k_features)
         steps.append(("feature_selection", selector))
-    else:
-        raise ValueError("`k_features` must be 'auto' or a non-zero integer")
     
     return Pipeline(steps)
